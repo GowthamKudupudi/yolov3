@@ -79,7 +79,15 @@ def create_modules(module_defs, img_size, cfg):
             layers = mdef['layers']
             filters = sum([output_filters[l + 1 if l > 0 else l] for l in layers])
             routs.extend([i + l if l < 0 else l for l in layers])
-            modules = FeatureConcat(layers=layers)
+            if 'groups' in mdef:
+                groups = mdef["groups"]
+                group_id = mdef['group_id']
+                modules = RouteGroup(layers=layers,
+                                     groups=groups,
+                                     group_id=group_id)
+                filters //= groups
+            else:
+                modules = FeatureConcat(layers=layers)
 
         elif mdef['type'] == 'shortcut':  # nn.Sequential() placeholder for 'shortcut' layer
             layers = mdef['from']
@@ -132,6 +140,25 @@ def create_modules(module_defs, img_size, cfg):
         routs_binary[i] = True
     return module_list, routs_binary
 
+class RouteGroup(nn.Module):
+    
+    def __init__(self, layers, groups, group_id):
+        super(RouteGroup, self).__init__()
+        self.layers = layers
+        self.multi = len(layers) > 1
+        self.groups = groups
+        self.group_id = group_id
+
+    def forward(self, x, outputs):
+        if self.multi:
+            outs = []
+            for layer in self.layers:
+                out = torch.chunk(outpus[layer], self.groups, dim=1)
+                outs.append(out[self.group_id])
+            return torch.cat(outs, dim=1)
+        else:
+            out = torch.chunk(outputs[self.layers[0]], self.groups, dim=1)
+            return out[self.group_id]
 
 class YOLOLayer(nn.Module):
     def __init__(self, anchors, nc, img_size, yolo_index, layers, stride):
@@ -286,7 +313,7 @@ class Darknet(nn.Module):
 
         for i, module in enumerate(self.module_list):
             name = module.__class__.__name__
-            if name in ['WeightedFeatureFusion', 'FeatureConcat']:  # sum, concat
+            if name in ['WeightedFeatureFusion', 'FeatureConcat', 'RouteGroup']:  # sum, concat
                 if verbose:
                     l = [i - 1] + module.layers  # layers
                     sh = [list(x.shape)] + [list(out[i].shape) for i in module.layers]  # shapes
